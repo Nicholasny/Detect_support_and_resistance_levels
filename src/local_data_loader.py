@@ -172,6 +172,33 @@ def list_instruments(data_dir: str) -> Dict[str, List[str]]:
     return {s: result[s] for s in sorted(result.keys())}
 
 
+# 名称表缓存：{csv 路径: (mtime, {代码: 名称})}，文件更新后自动重读
+_NAME_CACHE: Dict[str, tuple] = {}
+
+
+def load_symbol_names(data_dir: str) -> Dict[str, str]:
+    """
+    读取数据文件夹内的 _stock_list.csv（由 GenerateAStockData 生成，列 code, code_name），
+    返回 {代码: 名称}。文件不存在或读取失败时返回空字典（期货等数据源没有名称表）。
+    """
+    path = os.path.join(data_dir, "_stock_list.csv")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    hit = _NAME_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", usecols=["code", "code_name"])
+        names = {c.strip(): n.strip() for c, n in zip(df["code"], df["code_name"])
+                 if isinstance(c, str) and isinstance(n, str)}
+    except Exception:
+        names = {}
+    _NAME_CACHE[path] = (mtime, names)
+    return names
+
+
 def _filepath(data_dir: str, symbol: str, tf: str) -> str:
     """返回实际存在的 parquet 文件路径（兼容两种命名）"""
     # 优先期货格式 {symbol}主连_{tf}.parquet，回退 MT5 格式 {symbol}_{tf}.parquet

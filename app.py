@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from src.local_data_loader import (
-    list_instruments, load_kline, iter_all_instruments,
+    list_instruments, load_kline, iter_all_instruments, load_symbol_names,
     TIMEFRAME_LABELS, pick_mtf_timeframes,
 )
 from src.sr_engine import (
@@ -66,7 +66,13 @@ def set_data_dir(path: str):
 _ENGINE = SREngine()
 
 
-def _kline_to_json(df, n_bars: int = 150) -> dict:
+# 传给前端图表的 K 线上限：日线全部历史都在范围内；
+# 分钟线可能有数万根，过多会让 Plotly 拖动卡顿，只保留最近这么多根。
+# 前端初始只显示最近一段（CHART_INIT_BARS），拖动/缩小可查看更早的数据
+KLINE_MAX_BARS = 10000
+
+
+def _kline_to_json(df, n_bars: int = KLINE_MAX_BARS) -> dict:
     recent = df.tail(n_bars)
     return {
         "dates": [d.strftime("%Y-%m-%d %H:%M") if hasattr(d, "hour") else d.strftime("%Y-%m-%d")
@@ -183,10 +189,12 @@ def api_instruments():
     if not os.path.isdir(data_dir):
         return jsonify({"error": f"文件夹不存在: {data_dir}"}), 400
     instruments = list_instruments(data_dir)
+    names = load_symbol_names(data_dir)
     return jsonify({
         "data_dir": data_dir,
         "count": len(instruments),
-        "instruments": [{"symbol": s, "timeframes": tfs} for s, tfs in instruments.items()],
+        "instruments": [{"symbol": s, "name": names.get(s, ""), "timeframes": tfs}
+                        for s, tfs in instruments.items()],
         "tf_labels": TIMEFRAME_LABELS,
     })
 
@@ -250,7 +258,10 @@ def api_analyze():
                              direction=direction)
         result["tf"] = tf
         result["tf_label"] = TIMEFRAME_LABELS.get(tf, tf)
-        result["kline"] = _kline_to_json(df, n_bars=150)
+        result["kline"] = _kline_to_json(df)
+        name = load_symbol_names(data_dir).get(symbol)
+        if name:
+            result["stock_name"] = name
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": f"分析失败: {e}"}), 500

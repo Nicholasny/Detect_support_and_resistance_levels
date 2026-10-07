@@ -114,6 +114,12 @@
   .field.dir{flex:1 1 360px}
   .field.dir input{width:100%}
   .field.sel{flex:1 1 200px}
+  /* 标的名称绝对定位在输入框下方，不影响整行按钮底部对齐 */
+  .field.sym{position:relative}
+  .sym-name{position:absolute;left:4px;right:0;top:100%;margin-top:5px;font-size:12.5px;color:var(--text-dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:1em}
+  .sym-name.miss{color:var(--resistance)}
+  #analyzeHero .hero-row{row-gap:28px}   /* 窄屏换行时给名称留出位置 */
   input[type=text],select{
     background:#0e1118;border:1px solid var(--border-strong);border-radius:11px;color:var(--text);
     padding:12px 15px;font-family:var(--font-mono);font-size:14.5px;transition:border-color .2s, box-shadow .2s;outline:none;
@@ -492,9 +498,12 @@
   <!-- ===== Analyze controls ===== -->
   <div class="hero" id="analyzeHero" style="display:none">
     <div class="hero-row">
-      <div class="field sel">
+      <div class="field sel sym">
         <label>SYMBOL / 标的</label>
-        <select id="symbolSel"><option value="">— 选择品种 —</option></select>
+        <!-- 可手输代码或名称，datalist 提供联想；名称显示在输入框下方 -->
+        <input type="text" id="symbolInput" list="symbolList" placeholder="输入代码或名称" autocomplete="off" spellcheck="false">
+        <datalist id="symbolList"></datalist>
+        <div class="sym-name" id="symbolName"></div>
       </div>
       <div class="field sel">
         <label>TIMEFRAME / 周期</label>
@@ -692,7 +701,8 @@ const fmtPrice = (n) => {
   return Number(n).toLocaleString('zh-CN',{minimumFractionDigits:d,maximumFractionDigits:d});
 };
 
-let instruments = [];        // [{symbol, timeframes:[]}]
+let instruments = [];        // [{symbol, name, timeframes:[]}]
+let symbolNames = {};       // {代码: 名称}，来自数据目录的 _stock_list.csv
 let tfLabels = {};
 let allRows = [];            // analyze_all 结果
 let currentSymbol = null;
@@ -761,6 +771,7 @@ function loadInstruments(){
   fetch('/api/instruments').then(r => r.json()).then(d => {
     if (d.error) { showError(d.error); return; }
     instruments = d.instruments;
+    symbolNames = Object.fromEntries(instruments.map(i => [i.symbol, i.name || '']));
     tfLabels = d.tf_labels || {};
     $('#dirLbl').textContent = d.data_dir;
     $('#instCount').textContent = d.count;
@@ -770,10 +781,10 @@ function loadInstruments(){
     $('#analyzeHero').style.display = 'block';
     $('#emptyState').style.display = 'none';
 
-    // fill symbol select
-    const sel = $('#symbolSel');
-    sel.innerHTML = '<option value="">— 选择品种 —</option>' +
-      instruments.map(i => `<option value="${i.symbol}">${i.symbol}</option>`).join('');
+    // 标的联想列表：value 为代码，label 为名称
+    $('#symbolList').innerHTML = instruments.map(i =>
+      `<option value="${escHtml(i.symbol)}" label="${escHtml(i.name||'')}"></option>`).join('');
+    updateSymbolName();
 
     // default tf = D1
     fillTfSelect(instruments[0]?.timeframes || ['D1']);
@@ -781,10 +792,48 @@ function loadInstruments(){
   }).catch(e => showError('请求失败：'+e.message));
 }
 
-$('#symbolSel').addEventListener('change', () => {
-  const sym = $('#symbolSel').value;
-  const inst = instruments.find(i => i.symbol === sym);
-  fillTfSelect(inst ? inst.timeframes : []);
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* 按输入查找标的：先精确匹配代码，再精确匹配名称（不区分大小写） */
+function findInstrument(text){
+  const q = (text || '').trim();
+  if (!q) return null;
+  const lq = q.toLowerCase();
+  return instruments.find(i => i.symbol === q) ||
+         instruments.find(i => i.symbol.toLowerCase() === lq) ||
+         instruments.find(i => i.name && i.name.toLowerCase() === lq) || null;
+}
+
+/* 当前输入对应的标的代码；输入的是名称时返回其代码 */
+function currentSymbolValue(){
+  const inst = findInstrument($('#symbolInput').value);
+  return inst ? inst.symbol : '';
+}
+
+/* 在输入框下方显示标的名称，并按该标的可用周期刷新周期下拉框 */
+function updateSymbolName(){
+  const text = $('#symbolInput').value.trim();
+  const el = $('#symbolName');
+  const inst = findInstrument(text);
+  el.classList.remove('miss');
+  if (inst) {
+    el.textContent = inst.name ? (inst.name === text ? inst.symbol + ' · ' + inst.name : inst.name) : '';
+    // 只在周期列表确有变化时重填，避免覆盖用户已选的周期
+    const cur = Array.from($('#tfSel').options).map(o => o.value).join(',');
+    if (cur !== inst.timeframes.join(',')) fillTfSelect(inst.timeframes);
+  } else if (text) {
+    el.textContent = '未找到该标的';
+    el.classList.add('miss');
+  } else {
+    el.textContent = '';
+  }
+}
+
+$('#symbolInput').addEventListener('input', updateSymbolName);
+$('#symbolInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { updateSymbolName(); $('#analyzeBtn').click(); }
 });
 
 function fillTfSelect(tfs){
@@ -796,8 +845,11 @@ function fillTfSelect(tfs){
 
 /* ---------- Analyze single ---------- */
 $('#analyzeBtn').addEventListener('click', () => {
-  const symbol = $('#symbolSel').value;
-  if (!symbol) { showError('请选择品种'); return; }
+  const symbol = currentSymbolValue();
+  if (!symbol) {
+    showError($('#symbolInput').value.trim() ? '未找到该标的，请检查代码或名称' : '请输入标的代码');
+    return;
+  }
   const params = new URLSearchParams({
     symbol, tf: $('#tfSel').value,
     window: $('#windowSel').value, n_zones: $('#zonesSel').value,
@@ -877,6 +929,7 @@ function getFilteredRows(){
   if (!q) return allRows;
   return allRows.filter(r =>
     String(r.symbol||'').toLowerCase().includes(q) ||
+    String(symbolNames[r.symbol]||'').toLowerCase().includes(q) ||
     String(r.trend_label||'').toLowerCase().includes(q) ||
     String(r.direction||'').toLowerCase().includes(q)
   );
@@ -906,7 +959,7 @@ function renderSummaryPage(){
         ? fmt(Math.abs(r.nearest_distance_atr))+' ATR' : '—';
       return `<tr data-symbol="${r.symbol}">
         <td class="num" style="color:var(--text-faint)">${start+i+1}</td>
-        <td><b>${r.symbol}</b></td>
+        <td><b>${r.symbol}</b> <span style="color:var(--text-dim)">${escHtml(symbolNames[r.symbol]||'')}</span></td>
         <td class="num">${fmtPrice(r.current_price)}</td>
         <td class="num chg ${chgCls}">${chgTxt}</td>
         <td class="num">${probCell(r.p_touch)}</td>
@@ -932,8 +985,8 @@ $('#summaryTable tbody').addEventListener('click', e => {
   const tr = e.target.closest('tr[data-symbol]');
   if (!tr) return;
   const sym = tr.dataset.symbol;
-  $('#symbolSel').value = sym;
-  $('#symbolSel').dispatchEvent(new Event('change'));
+  $('#symbolInput').value = sym;
+  updateSymbolName();
   $('#analyzeBtn').click();
   $('#summaryTable tbody').querySelectorAll('tr').forEach(x => x.classList.remove('active'));
   tr.classList.add('active');
@@ -1041,16 +1094,86 @@ function drawMainChart(d){
      hovertemplate:'EMA20: %{y}<extra></extra>'},
     {type:'bar',x:k.dates,y:k.volume,marker:{color:volColors},name:'成交量',xaxis:'x',yaxis:'y2',showlegend:false}
   ];
+  // 后端传来全部历史 K 线，初始只显示最近 CHART_INIT_BARS 根；拖动/缩小可查看更早的数据
+  const n = k.dates.length;
+  const ms = k.dates.map(toMs);
+  chartView = {k, ms, zones:[...d.zones, ...(d.mtf_zones||[]).flatMap(it => it.zones)], price:d.current_price};
+  let xRange;
+  if (n > CHART_INIT_BARS) {
+    const pad = (ms[n-1] - ms[n-CHART_INIT_BARS]) * 0.02;     // 右侧留一点空白
+    xRange = [fmtMs(ms[n-CHART_INIT_BARS] - pad), fmtMs(ms[n-1] + pad)];
+  }
+  const fit = xRange ? fitYRanges(toMs(xRange[0]), toMs(xRange[1])) : null;
   Plotly.react('mainChart', traces, {
     paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
     font:{family:'Hanken Grotesk, sans-serif',color:'#9aa0ad',size:12},
     margin:{l:62,r:78,t:10,b:30}, dragmode:'pan',
-    xaxis:{rangeslider:{visible:false},gridcolor:'rgba(255,255,255,0.05)',linecolor:'rgba(255,255,255,0.12)',anchor:'y'},
-    yaxis:{domain:[0.26,1],side:'left',gridcolor:'rgba(255,255,255,0.05)',linecolor:'rgba(255,255,255,0.12)',tickfont:{family:'JetBrains Mono'}},
-    yaxis2:{domain:[0,0.20],anchor:'x',showgrid:false,tickfont:{family:'JetBrains Mono'}},
+    xaxis:{rangeslider:{visible:false},gridcolor:'rgba(255,255,255,0.05)',linecolor:'rgba(255,255,255,0.12)',anchor:'y',
+           ...(xRange ? {range:xRange, autorange:false} : {})},
+    yaxis:{domain:[0.26,1],side:'left',gridcolor:'rgba(255,255,255,0.05)',linecolor:'rgba(255,255,255,0.12)',tickfont:{family:'JetBrains Mono'},
+           ...(fit ? {range:fit.y, autorange:false} : {autorange:true})},
+    yaxis2:{domain:[0,0.20],anchor:'x',showgrid:false,tickfont:{family:'JetBrains Mono'},
+            ...(fit ? {range:fit.y2, autorange:false} : {autorange:true})},
     shapes,annotations, showlegend:true, legend:{orientation:'h',x:0,y:1.08,font:{size:11}},
     height:480
   },{displayModeBar:true,displaylogo:false,scrollZoom:true,responsive:true,modeBarButtonsToRemove:['lasso2d','select2d']});
+  bindChartAutoFit();
+}
+
+/* ---------- 主图 y 轴随可见区间自适应 ----------
+ * 全部历史都在图里时，Plotly 默认按全部数据定 y 轴，近期 K 线会被压扁；
+ * 这里每次拖动/缩放后，按当前可见的 K 线重新计算价格轴和成交量轴的范围。 */
+const CHART_INIT_BARS = 150;
+let chartView = null;          // {k, ms, zones, price}
+let chartFitBound = false;
+
+// 日期字符串按本地时间解析（"2026-03-05" 补成 "2026-03-05T00:00"，避免被当成 UTC）
+function toMs(s){
+  if (typeof s === 'number') return s;
+  s = String(s).trim().replace(' ', 'T').replace(/\.\d+$/, '');
+  if (s.length === 10) s += 'T00:00';
+  return Date.parse(s);
+}
+function fmtMs(t){
+  const d = new Date(t), p = v => String(v).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function fitYRanges(x0, x1){
+  const v = chartView;
+  if (!v) return null;
+  let lo = Infinity, hi = -Infinity, vmax = 0, last = false;
+  for (let i = 0; i < v.ms.length; i++) {
+    if (v.ms[i] < x0 || v.ms[i] > x1) continue;
+    lo = Math.min(lo, v.k.low[i]); hi = Math.max(hi, v.k.high[i]);
+    vmax = Math.max(vmax, v.k.volume[i]);
+    if (i === v.ms.length - 1) last = true;
+  }
+  if (!isFinite(lo)) return null;
+  // 可见区间包含最新 K 线时，关键位和现价也要完整显示
+  if (last) {
+    lo = Math.min(lo, v.price); hi = Math.max(hi, v.price);
+    v.zones.forEach(z => { lo = Math.min(lo, z.low); hi = Math.max(hi, z.high); });
+  }
+  const pad = (hi - lo) * 0.05 || hi * 0.01 || 1;
+  return {y:[lo - pad, hi + pad], y2:[0, (vmax || 1) * 1.08]};
+}
+
+function bindChartAutoFit(){
+  if (chartFitBound) return;
+  const el = document.getElementById('mainChart');
+  if (!el || !el.on) return;
+  chartFitBound = true;
+  el.on('plotly_relayout', ev => {
+    if (!chartView) return;
+    let x0, x1;
+    if (ev['xaxis.range[0]'] !== undefined) { x0 = ev['xaxis.range[0]']; x1 = ev['xaxis.range[1]']; }
+    else if (Array.isArray(ev['xaxis.range'])) { [x0, x1] = ev['xaxis.range']; }
+    else if (ev['xaxis.autorange']) { x0 = -Infinity; x1 = Infinity; }   // 双击/复位：显示全部
+    else return;   // 只改 y 轴的事件（包括下面自己发出的）直接忽略，避免循环
+    const fit = fitYRanges(toMs(x0), toMs(x1));
+    if (fit) Plotly.relayout(el, {'yaxis.range':fit.y, 'yaxis2.range':fit.y2});
+  });
 }
 
 /* 计算 EMA（与后端 pandas ewm adjust=False 一致） */
