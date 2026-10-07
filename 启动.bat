@@ -18,7 +18,7 @@ if errorlevel 1 (
 )
 
 REM Check deps, auto install if missing
-python -c "import flask, pyarrow" 2>nul
+python -c "import flask, pyarrow, pypinyin" 2>nul
 if errorlevel 1 (
     echo [INFO] Missing dependencies, installing requirements.txt ...
     python -m pip install -r requirements.txt

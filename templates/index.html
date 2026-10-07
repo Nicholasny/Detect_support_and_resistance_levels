@@ -703,6 +703,7 @@ const fmtPrice = (n) => {
 
 let instruments = [];        // [{symbol, name, timeframes:[]}]
 let symbolNames = {};       // {代码: 名称}，来自数据目录的 _stock_list.csv
+let symbolPy = {};          // {代码: 拼音首字母}，如 000001 -> payh
 let tfLabels = {};
 let allRows = [];            // analyze_all 结果
 let currentSymbol = null;
@@ -772,6 +773,7 @@ function loadInstruments(){
     if (d.error) { showError(d.error); return; }
     instruments = d.instruments;
     symbolNames = Object.fromEntries(instruments.map(i => [i.symbol, i.name || '']));
+    symbolPy = Object.fromEntries(instruments.map(i => [i.symbol, i.py || '']));
     tfLabels = d.tf_labels || {};
     $('#dirLbl').textContent = d.data_dir;
     $('#instCount').textContent = d.count;
@@ -781,9 +783,9 @@ function loadInstruments(){
     $('#analyzeHero').style.display = 'block';
     $('#emptyState').style.display = 'none';
 
-    // 标的联想列表：value 为代码，label 为名称
+    // 标的联想列表：value 为代码，label 为"名称 首字母"（浏览器按 value/label 子串过滤，输入 payh 也能联想）
     $('#symbolList').innerHTML = instruments.map(i =>
-      `<option value="${escHtml(i.symbol)}" label="${escHtml(i.name||'')}"></option>`).join('');
+      `<option value="${escHtml(i.symbol)}" label="${escHtml([i.name, (i.py||'').toUpperCase()].filter(Boolean).join(' '))}"></option>`).join('');
     updateSymbolName();
 
     // default tf = D1
@@ -796,14 +798,29 @@ function escHtml(s){
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-/* 按输入查找标的：先精确匹配代码，再精确匹配名称（不区分大小写） */
+/* 按输入查找标的：依次精确匹配代码、名称、拼音首字母（不区分大小写） */
 function findInstrument(text){
+  return findInstruments(text)[0] || null;
+}
+
+/* 返回全部精确匹配的标的；拼音首字母可能重名（如多只 "zgyh"），所以返回数组 */
+function findInstruments(text){
   const q = (text || '').trim();
-  if (!q) return null;
+  if (!q) return [];
   const lq = q.toLowerCase();
-  return instruments.find(i => i.symbol === q) ||
-         instruments.find(i => i.symbol.toLowerCase() === lq) ||
-         instruments.find(i => i.name && i.name.toLowerCase() === lq) || null;
+  const bySym = instruments.find(i => i.symbol === q || i.symbol.toLowerCase() === lq);
+  if (bySym) return [bySym];
+  const byName = instruments.find(i => i.name && i.name.toLowerCase() === lq);
+  if (byName) return [byName];
+  return instruments.filter(i => i.py && i.py === lq);
+}
+
+/* 尚未精确匹配时的候选数：代码前缀 / 名称包含 / 首字母前缀 */
+function countCandidates(text){
+  const lq = (text || '').trim().toLowerCase();
+  if (!lq) return 0;
+  return instruments.filter(i => i.symbol.toLowerCase().startsWith(lq) ||
+    (i.name && i.name.toLowerCase().includes(lq)) || (i.py && i.py.startsWith(lq))).length;
 }
 
 /* 当前输入对应的标的代码；输入的是名称时返回其代码 */
@@ -816,16 +833,24 @@ function currentSymbolValue(){
 function updateSymbolName(){
   const text = $('#symbolInput').value.trim();
   const el = $('#symbolName');
-  const inst = findInstrument(text);
+  const hits = findInstruments(text);
+  const inst = hits[0];
   el.classList.remove('miss');
   if (inst) {
-    el.textContent = inst.name ? (inst.name === text ? inst.symbol + ' · ' + inst.name : inst.name) : '';
+    // 输入的就是代码时只显示名称；按名称/首字母找到时同时显示代码，便于确认
+    el.textContent = !inst.name ? '' : (inst.symbol === text ? inst.name : inst.symbol + ' · ' + inst.name);
+    if (hits.length > 1) el.textContent += `（另有 ${hits.length - 1} 只同首字母，可从下拉列表选择）`;
     // 只在周期列表确有变化时重填，避免覆盖用户已选的周期
     const cur = Array.from($('#tfSel').options).map(o => o.value).join(',');
     if (cur !== inst.timeframes.join(',')) fillTfSelect(inst.timeframes);
   } else if (text) {
-    el.textContent = '未找到该标的';
-    el.classList.add('miss');
+    const n = countCandidates(text);
+    if (n) {
+      el.textContent = `匹配 ${n} 只，继续输入或从下拉列表选择`;
+    } else {
+      el.textContent = '未找到该标的';
+      el.classList.add('miss');
+    }
   } else {
     el.textContent = '';
   }
@@ -930,6 +955,7 @@ function getFilteredRows(){
   return allRows.filter(r =>
     String(r.symbol||'').toLowerCase().includes(q) ||
     String(symbolNames[r.symbol]||'').toLowerCase().includes(q) ||
+    String(symbolPy[r.symbol]||'').startsWith(q) ||
     String(r.trend_label||'').toLowerCase().includes(q) ||
     String(r.direction||'').toLowerCase().includes(q)
   );

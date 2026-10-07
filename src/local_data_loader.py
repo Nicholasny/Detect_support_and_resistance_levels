@@ -199,6 +199,30 @@ def load_symbol_names(data_dir: str) -> Dict[str, str]:
     return names
 
 
+_INITIALS_CACHE: Dict[str, str] = {}
+
+
+def name_initials(name: str) -> str:
+    """
+    名称的拼音首字母（小写），用于按首字母查找标的，如 "平安银行" -> "payh"。
+    非汉字部分原样保留字母数字："万科A" -> "wka"，"*ST国华" -> "stgh"。
+    pypinyin 按词组处理多音字（"银行" 读 hang）。未安装 pypinyin 时返回空串。
+    """
+    if not name:
+        return ""
+    hit = _INITIALS_CACHE.get(name)
+    if hit is not None:
+        return hit
+    try:
+        from pypinyin import Style, lazy_pinyin
+        parts = lazy_pinyin(name, style=Style.FIRST_LETTER)
+        out = re.sub(r"[^0-9a-z]", "", "".join(parts).lower())
+    except ImportError:
+        out = ""
+    _INITIALS_CACHE[name] = out
+    return out
+
+
 def _filepath(data_dir: str, symbol: str, tf: str) -> str:
     """返回实际存在的 parquet 文件路径（兼容两种命名）"""
     # 优先期货格式 {symbol}主连_{tf}.parquet，回退 MT5 格式 {symbol}_{tf}.parquet

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from src.local_data_loader import (
-    list_instruments, load_kline, iter_all_instruments, load_symbol_names,
+    list_instruments, load_kline, iter_all_instruments, load_symbol_names, name_initials,
     TIMEFRAME_LABELS, pick_mtf_timeframes,
 )
 from src.sr_engine import (
@@ -193,7 +193,8 @@ def api_instruments():
     return jsonify({
         "data_dir": data_dir,
         "count": len(instruments),
-        "instruments": [{"symbol": s, "name": names.get(s, ""), "timeframes": tfs}
+        "instruments": [{"symbol": s, "name": names.get(s, ""),
+                         "py": name_initials(names.get(s, "")), "timeframes": tfs}
                         for s, tfs in instruments.items()],
         "tf_labels": TIMEFRAME_LABELS,
     })
