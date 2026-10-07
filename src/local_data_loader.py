@@ -23,6 +23,7 @@ import pandas as pd
 TIMEFRAME_LABELS = {
     "D1": "日线",
     "W1": "周线",
+    "MN1": "月线",
     "M1": "1分钟",
     "M3": "3分钟",
     "M5": "5分钟",
@@ -108,6 +109,9 @@ _ASHARE_PATTERN = re.compile(r"^(?P<code>\d{6})_(?P<tf>daily|60min|15min|5min)\.
 _ASHARE_TF_TO_STD = {"daily": "D1", "60min": "H1", "15min": "M15", "5min": "M5"}
 _STD_TO_ASHARE_TF = {v: k for k, v in _ASHARE_TF_TO_STD.items()}
 
+# A股只下载日线；周线/月线由复权后的日线合成（周期代码 -> pandas Period 频率）
+_ASHARE_DERIVED = {"W1": "W-FRI", "MN1": "M"}
+
 # 前端会把周期参数 upper() 后传回来（'daily' -> 'DAILY'），
 # 因此这里同时接受标准名与 A股 原始名的大小写变体。
 _ASHARE_TF_ALIASES = {}
@@ -162,10 +166,15 @@ def list_instruments(data_dir: str) -> Dict[str, List[str]]:
         if not parsed:
             continue
         symbol, tf = parsed
-        result.setdefault(symbol, []).append(tf)
+        tfs = result.setdefault(symbol, [])
+        # A股日线可合成周线/月线（不需要单独的文件）
+        extra = list(_ASHARE_DERIVED) if tf == "D1" and _ASHARE_PATTERN.match(fn) else []
+        for t in [tf, *extra]:
+            if t not in tfs:
+                tfs.append(t)
     # 每个品种的周期按固定顺序排序
     order = {tf: i for i, tf in enumerate(
-        ["D1", "W1", "H1", "H2", "H4", "M30", "M15", "M5", "M3", "M1"])}
+        ["D1", "W1", "MN1", "H1", "H2", "H4", "M30", "M15", "M5", "M3", "M1"])}
     for symbol in result:
         result[symbol].sort(key=lambda t: order.get(t, 99))
     # 品种按名称排序
@@ -252,6 +261,11 @@ def load_kline(data_dir: str, symbol: str, tf: str) -> pd.DataFrame:
     # 本地 A股 parquet 实测为**不复权**（time 单位是 unix秒/1000，volume 单位是手），
     # 历史含 -20% ~ -57% 的除权跳空，直接拿来算成交量剖面/枢轴/ATR 全是错的。
     # 界面用前复权(qfq)，使最新价 = 真实市价。
+    # A股周线/月线：由复权后的日线合成
+    if tf in _ASHARE_DERIVED and _ASHARE_PATTERN.match(f"{symbol}_daily.parquet") and \
+            os.path.exists(os.path.join(data_dir, f"{symbol}_daily.parquet")):
+        return _resample_ashare(_load_ashare(data_dir, symbol, "daily"), tf)
+
     _a_tf = ashare_tf_file(tf)
     if _a_tf and _ASHARE_PATTERN.match(f"{symbol}_{_a_tf}.parquet") and \
             os.path.exists(os.path.join(data_dir, f"{symbol}_{_a_tf}.parquet")):
@@ -342,6 +356,32 @@ def _load_ashare(data_dir: str, code: str, tf: str) -> pd.DataFrame:
     out = df[["date", "open", "high", "low", "close", "volume",
               "amount", "turn", "pct_chg"]].copy()
     out.attrs.update(attrs)
+    return out
+
+
+def _resample_ashare(df: pd.DataFrame, tf: str) -> pd.DataFrame:
+    """
+    把（已复权的）日线合成为周线/月线。
+
+    必须先复权再合成：若直接合成不复权日线，除权那一周/月的 OHLC 会混入
+    除权前后两种价格尺度，产生虚假的长影线和跳空。
+    每根 K 线的 date 取该周期内最后一个交易日（而非自然周末/月末），
+    这样最后一根未走完的周/月也落在真实交易日上。
+    """
+    key = df["date"].dt.to_period(_ASHARE_DERIVED[tf])
+    g = df.groupby(key, sort=True)
+    out = pd.DataFrame({
+        "date": g["date"].last(),
+        "open": g["open"].first(),
+        "high": g["high"].max(),
+        "low": g["low"].min(),
+        "close": g["close"].last(),
+        "volume": g["volume"].sum(),
+        "amount": g["amount"].sum(),
+        "turn": g["turn"].sum(),
+    }).reset_index(drop=True)
+    out["pct_chg"] = out["close"].pct_change().fillna(0.0) * 100
+    out.attrs.update(df.attrs)
     return out
 
 
